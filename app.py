@@ -59,7 +59,7 @@ if uploaded_file is not None:
         st.dataframe(st.session_state['df_raw'].head(100), height=250)
 
         if st.button("🚀 Bắt đầu Xử lý Diễn giải & Tài khoản"):
-            with st.spinner('ZinZIN đang làm việc...'):
+            with st.spinner('Su Su đang làm việc...'):
                 # 1. Gọi processor để gọt diễn giải (Bảng 2)
                 df_b2 = processor.process_data(st.session_state['df_raw'].copy())
                 st.session_state['df_b2'] = df_b2
