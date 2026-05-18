@@ -148,7 +148,7 @@ def process_data(df_raw):
 
 def generate_table_3(df_b2):
     """Tạo Bảng 3: Gom các dòng trùng Số HD và Diễn giải, cộng dồn số tiền
-    Đồng thời tự động điền V/X vào cột HDVAT dựa trên tiền thuế."""
+    Đồng thời tự động điền V/X vào cột HDVAT dựa trên tiền thuế của dòng hàng thực tế."""
     df_t3 = df_b2.copy()
     
     # Gom theo các cột định danh
@@ -161,18 +161,30 @@ def generate_table_3(df_b2):
     num_cols = ['LUONG_CTU', 'LUONG', 'TTVND', 'THUEVND', 'TTVND_TT', 'TIENHANG']
     for col in num_cols:
         if col in df_t3.columns:
-            df_t3[col] = pd.to_numeric(df_t3[col].astype(str).str.replace(',', '').str.replace(' ', ''), errors='coerce').fillna(0)
+            df_t3[col] = df_t3[col].astype(str).str.replace(',', '').str.replace(' ', '')
+            df_t3[col] = pd.to_numeric(df_t3[col], errors='coerce').fillna(0.0)
 
-    # --- ĐOẠN ĐƯỢC THÊM MỚI: TÍNH TOÁN HDVAT TRƯỚC KHI GỘP DÒNG ---
-    # Tính tổng tiền thuế của cả cụm trùng nhau
-    total_tax_per_group = df_t3.groupby(group_cols)['THUEVND'].transform('sum')
-    # Nếu tổng thuế của cả cụm > 0 thì điền 'V', ngược lại (tất cả bằng 0) thì điền 'X'
-    df_t3['HDVAT'] = total_tax_per_group.apply(lambda x: 'V' if x > 0 else 'X')
+    # --- SỬA LỖI LOGIC: PHÂN BIỆT XÊ DỊCH TRỐNG THUẾ VÀ CÓ THUẾ ---
+    tax_keywords = ["THUẾ GTGT", "THUẾ GIÁ TRỊ GIA TĂNG", "THUẾ VAT", "VAT 8%", "VAT 10%"]
+    
+    # Tạo cột ảo: Ép tiền thuế về 0 nếu dòng đó bản chất chỉ là dòng diễn giải Thuế GTGT
+    df_t3['THUE_TINH_TOAN'] = df_t3.apply(
+        lambda r: 0.0 if any(kw in str(r['DIENGIAI']).upper() for kw in tax_keywords) else r['THUEVND'], 
+        axis=1
+    )
+    
+    # Tính tổng tiền thuế thực tế của hàng hóa trong cùng một cụm gộp
+    total_tax_per_group = df_t3.groupby(group_cols)['THUE_TINH_TOAN'].transform('sum')
+    
+    # Điền V nếu tổng tiền thuế hàng hóa > 0, ngược lại điền X
+    df_t3['HDVAT'] = total_tax_per_group.apply(lambda x: 'V' if x > 0.0 else 'X')
+    
+    # Xóa bỏ cột tính toán tạm thời
+    df_t3 = df_t3.drop(columns=['THUE_TINH_TOAN'])
     # -------------------------------------------------------------
             
     agg_funcs = {col: ('sum' if col in num_cols else 'first') for col in df_t3.columns if col not in group_cols}
     
-    # Cột HDVAT mới tạo là dạng chữ (text), ta dùng 'first' để giữ lại kết quả V/X vừa tính
     if 'HDVAT' in agg_funcs:
         agg_funcs['HDVAT'] = 'first'
         
@@ -183,5 +195,4 @@ def generate_table_3(df_b2):
         if col in df_grouped.columns:
             df_grouped[col] = df_grouped[col].apply(lambda x: f"{x:g}" if x != 0 else "")
             
-    # Trả về bảng có chứa cột HDVAT mới
     return df_grouped
