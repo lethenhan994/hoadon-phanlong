@@ -95,8 +95,9 @@ class ZinZinMisaEngine:
             
         return final_desc, found_tk_no, found_tk_co
 
+
 def process_data(df_raw):
-    """Tạo Bảng 2: Chuẩn hóa diễn giải và áp luật tài khoản Phan Long"""
+    """Tạo Bảng 2: Chuẩn hóa diễn giải và áp luật tài khoản"""
     engine = ZinZinMisaEngine()
     df = df_raw.copy()
     df.columns = df.columns.astype(str).str.strip()
@@ -123,7 +124,6 @@ def process_data(df_raw):
         
         # Xử lý TK Có theo luật số tiền và Thuê tài chính
         try:
-            # Ưu tiên lấy tổng tiền thanh toán (TTVND_TT) để xét ngưỡng 5 triệu
             val_tt = str(row.get('TTVND_TT', 0)).replace(',', '').replace(' ', '')
             amount = float(val_tt) if val_tt != "" else 0
         except:
@@ -138,7 +138,6 @@ def process_data(df_raw):
 
         return res_desc, final_no, final_co
 
-    # Cập nhật dữ liệu
     results = df.apply(apply_logic, axis=1)
     df['DIENGIAI'] = [x[0] for x in results]
     df['TKNO'] = [x[1] for x in results]
@@ -146,13 +145,34 @@ def process_data(df_raw):
     
     return df.drop(columns=['SOCT_Clean'], errors='ignore')
 
+
 def generate_table_3(df_b2):
-    """Tạo Bảng 3: Gom các dòng trùng Số HD và Diễn giải, cộng dồn số tiền
-    Đồng thời tự động điền V/X vào cột HDVAT dựa trên tiền thuế của dòng hàng thực tế."""
+    """Tạo Bảng 3: Xác định HDVAT trước khi gom dòng để tách bạch Hàng chịu thuế và Không chịu thuế"""
     df_t3 = df_b2.copy()
     
-    # Gom theo các cột định danh
-    group_cols = ['SOCT', 'SO_HD', 'DIENGIAI', 'TKNO', 'TKCO']
+    # Đảm bảo cột TS_GTGT tồn tại để tránh lỗi
+    if 'TS_GTGT' not in df_t3.columns:
+        df_t3['TS_GTGT'] = ""
+        
+    # --- BƯỚC 1: XÁC ĐỊNH V/X NGAY CHO TỪNG DÒNG TRƯỚC KHI GOM ---
+    def determine_single_hdvat(val):
+        val_str = str(val).strip().upper().replace('%', '')
+        # Cắt đuôi .0 nếu dữ liệu là số thập phân
+        if val_str.endswith('.0'): 
+            val_str = val_str[:-2]
+            
+        # Thêm 'KHAC' và 'KHÁC' vào danh sách kiểm tra (bao gồm cả trường hợp viết hoa/thường do đã .upper() ở trên)
+        valid_taxes = ['10', '5', '8']
+        
+        if val_str in valid_taxes or 'CTTC' in val_str or 'KHAC' in val_str or 'KHÁC' in val_str:
+            return 'V'
+        return 'X'
+        
+    df_t3['HDVAT'] = df_t3['TS_GTGT'].apply(determine_single_hdvat)
+
+    # --- BƯỚC 2: THÊM CỘT HDVAT VÀO ĐIỀU KIỆN GOM NHÓM ---
+    group_cols = ['SOCT', 'SO_HD', 'DIENGIAI', 'TKNO', 'TKCO', 'HDVAT']
+    
     for col in group_cols:
         if col in df_t3.columns:
             df_t3[col] = df_t3[col].fillna("")
@@ -161,38 +181,31 @@ def generate_table_3(df_b2):
     num_cols = ['LUONG_CTU', 'LUONG', 'TTVND', 'THUEVND', 'TTVND_TT', 'TIENHANG']
     for col in num_cols:
         if col in df_t3.columns:
-            df_t3[col] = df_t3[col].astype(str).str.replace(',', '').str.replace(' ', '')
-            df_t3[col] = pd.to_numeric(df_t3[col], errors='coerce').fillna(0.0)
-
-    # --- SỬA LỖI LOGIC: PHÂN BIỆT XÊ DỊCH TRỐNG THUẾ VÀ CÓ THUẾ ---
-    tax_keywords = ["THUẾ GTGT", "THUẾ GIÁ TRỊ GIA TĂNG", "THUẾ VAT", "VAT 8%", "VAT 10%"]
-    
-    # Tạo cột ảo: Ép tiền thuế về 0 nếu dòng đó bản chất chỉ là dòng diễn giải Thuế GTGT
-    df_t3['THUE_TINH_TOAN'] = df_t3.apply(
-        lambda r: 0.0 if any(kw in str(r['DIENGIAI']).upper() for kw in tax_keywords) else r['THUEVND'], 
-        axis=1
-    )
-    
-    # Tính tổng tiền thuế thực tế của hàng hóa trong cùng một cụm gộp
-    total_tax_per_group = df_t3.groupby(group_cols)['THUE_TINH_TOAN'].transform('sum')
-    
-    # Điền V nếu tổng tiền thuế hàng hóa > 0, ngược lại điền X
-    df_t3['HDVAT'] = total_tax_per_group.apply(lambda x: 'V' if x > 0.0 else 'X')
-    
-    # Xóa bỏ cột tính toán tạm thời
-    df_t3 = df_t3.drop(columns=['THUE_TINH_TOAN'])
-    # -------------------------------------------------------------
+            clean_str = df_t3[col].astype(str).str.replace(',', '').str.replace(' ', '')
+            df_t3[col] = pd.to_numeric(clean_str, errors='coerce').fillna(0)
             
-    agg_funcs = {col: ('sum' if col in num_cols else 'first') for col in df_t3.columns if col not in group_cols}
+    # Khai báo logic gom dòng (aggregation)
+    agg_funcs = {}
+    for col in df_t3.columns:
+        if col not in group_cols:
+            if col in num_cols:
+                agg_funcs[col] = 'sum'
+            else:
+                agg_funcs[col] = 'first'
     
-    if 'HDVAT' in agg_funcs:
-        agg_funcs['HDVAT'] = 'first'
-        
+    # Thực hiện gom dòng
     df_grouped = df_t3.groupby(group_cols, as_index=False, dropna=False).agg(agg_funcs)
-    
-    # Định dạng lại số tiền cho đẹp (bỏ đuôi .0)
+
+    # Định dạng lại số tiền (bỏ định dạng e+07 gây lỗi)
     for col in num_cols:
         if col in df_grouped.columns:
-            df_grouped[col] = df_grouped[col].apply(lambda x: f"{x:g}" if x != 0 else "")
+            df_grouped[col] = df_grouped[col].apply(
+                lambda x: "" if x == 0 else (int(x) if x == int(x) else x)
+            )
             
-    return df_grouped
+    # Sắp xếp lại thứ tự cột cho đúng với bảng xuất ra ban đầu
+    final_cols = [col for col in df_b2.columns]
+    if 'HDVAT' not in final_cols:
+        final_cols.append('HDVAT') 
+        
+    return df_grouped[[col for col in final_cols if col in df_grouped.columns]]
