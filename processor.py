@@ -162,7 +162,7 @@ def generate_table_3(df_b2):
             val_str = val_str[:-2]
             
         # Thêm 'KHAC' và 'KHÁC' vào danh sách kiểm tra (bao gồm cả trường hợp viết hoa/thường do đã .upper() ở trên)
-        valid_taxes = ['10', '5', '8']
+        valid_taxes = ['0', '10', '5', '8', '5.2600', '5.26' ]
         
         if val_str in valid_taxes or 'CTTC' in val_str or 'KHAC' in val_str or 'KHÁC' in val_str:
             return 'V'
